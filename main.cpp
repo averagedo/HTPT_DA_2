@@ -19,7 +19,7 @@
 using namespace std;
 
 #define Len_buff 1000
-#define TIME 8000000
+#define TIME 7000000
 #define NAME_FILE "_log.txt"
 #define FOLDER "./log/"
 #define CONF "./conf.txt"
@@ -33,7 +33,9 @@ int proposer;
 bool check_propose = false;
 bool flag_pro = false;
 bool plusround = true;
-bool write_log=true;
+bool write_log = true;
+bool Byzantine = false;
+bool silent = false;
 int global_id;
 
 struct info
@@ -42,6 +44,8 @@ struct info
   string ip;
   int port;
 };
+
+vector<int> nodedown = {1, 3, 4, 2, 7, 6, 5, 3, 5, 7, 1, 2, 6, 4, 7, 1, 2, 5, 6, 3, 4, 2};
 
 clock_t start = clock();
 
@@ -154,9 +158,12 @@ void recv_mess(int port)
 // het 15s tang round 1 lan
 void OutOfTime(int num_proc)
 {
+  int r4 = -1, z = 0;
   while (1)
   {
-    sleep(7);
+    usleep(TIME);
+    if (z == 5)
+      exit(0);
     flag_pro = true;
     if (plusround == true)
     {
@@ -166,14 +173,32 @@ void OutOfTime(int num_proc)
     cout << "ROUN " << round << endl;
     int_yes = 0;
     plusround = true;
-    write_log=true;
+    write_log = true;
+    r4++;
+    if (r4 == 4)
+    {
+      z++;
+      r4 = 0;
+      silent = false;
+      for (int i = 0; i < 2; i++)
+      {
+        int a = nodedown.back();
+        nodedown.pop_back();
+        if (a == global_id)
+        {
+          silent = true;
+          break;
+        }
+      }
+    }
+
     cv_pro.notify_one();
   }
 }
 
 void log(string id)
 {
-  int tg = (int)((clock() - start) / CLOCKS_PER_SEC);
+  int tg = (int)((clock() - start) / 1000 - 3);
 
   ofstream ff;
   ff.open(FOLDER + id + NAME_FILE, ios::app);
@@ -186,7 +211,7 @@ void log(string id)
   if (check_propose == false)
   {
     cout << "Proposer error" << endl;
-    exit(1);
+    return;
   }
 
   ff << "Thoi gian: " << to_string(tg) << '\n';
@@ -221,27 +246,30 @@ void classify_mess(int id, vector<info> v_info, vector<string> store_mess)
 
     if (data != "yes" && data != "no")
     {
-      int x;
-      if (stoi(data) == round + 1)
+      if (silent == false)
       {
-        thread thr_bro(broadcast, id, v_info, "yes");
-        thr_bro.detach();
-        proposer = stoi(data);
-        check_propose = true;
-      }
-      else
-      {
-        thread thr_bro(broadcast, id, v_info, "no");
-        thr_bro.detach();
+        int x;
+        if (stoi(data) == round + 1 && Byzantine == false)
+        {
+          thread thr_bro(broadcast, id, v_info, "yes");
+          thr_bro.detach();
+          proposer = stoi(data);
+          check_propose = true;
+        }
+        else
+        {
+          thread thr_bro(broadcast, id, v_info, "no");
+          thr_bro.detach();
+        }
       }
     }
     else
     {
       // Khong xet truong hop node loi gui nhieu goi tra loi
       mtx_log.lock();
-      if (data == "yes" && write_log==true)
+      if (data == "yes" && write_log == true)
         int_yes++;
-        
+
       if (int_yes >= 4)
       {
         //ghi file
@@ -251,7 +279,7 @@ void classify_mess(int id, vector<info> v_info, vector<string> store_mess)
         check_propose = false;
         round++;
         round = round % v_info.size();
-        write_log=false;
+        write_log = false;
         plusround = false;
       }
       mtx_log.unlock();
@@ -265,17 +293,27 @@ void fun_propose(int id, vector<info> v_info)
   {
     unique_lock<mutex> lck(mtx_pro);
     cv_pro.wait(lck, []() { return flag_pro; });
-    cout<<"Chay "<<global_id<<endl;
+    cout << "Chay " << global_id << endl;
     flag_pro = false;
-    if (round == id - 1)
+    if (silent == false)
     {
-      cout << "Proposer: " << id << endl;
-      thread thr_send(broadcast, id, v_info, to_string(id));
-      thr_send.detach();
+      if (Byzantine == false)
+      {
+        if (round == id - 1)
+        {
+          cout << "Proposer: " << id << endl;
+          thread thr_send(broadcast, id, v_info, to_string(id));
+          thr_send.detach();
+        }
+      }
+      else
+      {
+        srand((int)time(0));
+        int iid = rand() % 7 + 1;
+        thread thr_send(broadcast, id, v_info, to_string(iid));
+        thr_send.detach();
+      }
     }
-
-    /*proposer=id;
-    check_propose=true;*/
   }
 }
 
@@ -287,9 +325,9 @@ void consensus(int id, vector<info> v_info)
   thread thr_propo(fun_propose, id, v_info);
   thr_propo.detach();
 
-  sleep(5);
+  sleep(3);
 
-  flag_pro=true;
+  flag_pro = true;
   cv_pro.notify_one();
 
   thread thr_timeout(OutOfTime, v_info.size());
@@ -350,24 +388,26 @@ vector<info> GetInfo()
 
 int main(int argc, char *argv[])
 {
-  if (argc != 2)
+  if (argc != 2 and argc != 3)
   {
-    cout << "./main <process_id>" << endl;
+    cout << "argument false." << endl;
     exit(1);
   }
 
   string id = argv[1];
-  global_id=stoi(id);
+  global_id = stoi(id);
+
+  string Byz;
+  if (argc == 3)
+  {
+    Byz = argv[2];
+    if (Byz == "B")
+      Byzantine = true;
+  }
 
   vector<info> v_info;
   v_info = GetInfo();
 
-  /*cout<<"size: "<<v_info.size()<<endl;
-  for(int i=0;i<v_info.size();i++)
-  {
-    cout<<v_info[i].id<<endl;
-    cout<<v_info[i].ip<<"  "<<v_info[i].ip.length()<<endl<<endl;
-  }*/
   consensus(stoi(id), v_info);
 
   return 0;
