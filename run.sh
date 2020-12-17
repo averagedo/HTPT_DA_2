@@ -1,7 +1,8 @@
 #!/bin/bash
 make
-
-for((i=1;i<=2;i++))
+rm ./log/*
+for((i=1;i<=7;i++))
 do
   ./main $i &
 done
+

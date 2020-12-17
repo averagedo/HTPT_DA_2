@@ -19,19 +19,22 @@
 using namespace std;
 
 #define Len_buff 1000
-#define TIME 15000000
+#define TIME 8000000
 #define NAME_FILE "_log.txt"
 #define FOLDER "./log/"
 #define CONF "./conf.txt"
 
-mutex mtx_recv, mtx_pro;
+mutex mtx_recv, mtx_pro, mtx_log, mtx_vstr;
 condition_variable cv_recv, cv_pro;
 vector<string> gb_v_str;
 int int_yes = 0;
 int round = 0;
 int proposer;
 bool check_propose = false;
-bool flag_pro = true;
+bool flag_pro = false;
+bool plusround = true;
+bool write_log=true;
+int global_id;
 
 struct info
 {
@@ -64,14 +67,13 @@ void send_mess(std::string ip, int port, std::string mess)
   if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
     cout << "setsockopt(SO_REUSEADDR) failed" << endl;
   if (setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0)
-    cout << "setsockopt(SO_REUSEADDR) failed" << endl;
+    cout << "setsockopt(SO_REUSEPORT) failed" << endl;
 
   serv_addr.sin_family = AF_INET;
   serv_addr.sin_port = htons(port);
 
   // Convert IPv4 and IPv6 addresses from text to binary form
-  cout << "ip: " << ip << " " << ip.length() << " " << port << " "<< mess<< endl;
-
+  //cout << "ip: " << ip << " " << ip.length() << " " << port << " "<< mess<< endl;
   if (inet_pton(AF_INET, ip.c_str(), &serv_addr.sin_addr) <= 0)
   {
     std::cout << "Invalid address\n";
@@ -141,8 +143,10 @@ void recv_mess(int port)
     }
 
     std::string str = buffer;
-    cout << "Mess duoc gui: " << str << endl;
+    //cout << "Mess duoc gui: " << str << endl;
+    mtx_vstr.lock();
     gb_v_str.push_back(str);
+    mtx_vstr.unlock();
     cv_recv.notify_one();
   }
 }
@@ -150,16 +154,26 @@ void recv_mess(int port)
 // het 15s tang round 1 lan
 void OutOfTime(int num_proc)
 {
-  usleep(TIME);
-  flag_pro = true;
-  round++;
-  round = round % num_proc;
-  cv_pro.notify_one();
+  while (1)
+  {
+    sleep(7);
+    flag_pro = true;
+    if (plusround == true)
+    {
+      round++;
+      round = round % num_proc;
+    }
+    cout << "ROUN " << round << endl;
+    int_yes = 0;
+    plusround = true;
+    write_log=true;
+    cv_pro.notify_one();
+  }
 }
 
 void log(string id)
 {
-  int tg = (int)(clock() - start) / CLOCKS_PER_SEC;
+  int tg = (int)((clock() - start) / CLOCKS_PER_SEC);
 
   ofstream ff;
   ff.open(FOLDER + id + NAME_FILE, ios::app);
@@ -186,9 +200,6 @@ void broadcast(int id, vector<info> v_info, string mess)
 {
   for (int i = 0; i < v_info.size(); i++)
   {
-    /*if (v_info[i].id == id)
-      continue;*/
-
     thread *thr = new thread(send_mess, v_info[i].ip, v_info[i].port, mess);
     thr->detach();
   }
@@ -211,72 +222,74 @@ void classify_mess(int id, vector<info> v_info, vector<string> store_mess)
     if (data != "yes" && data != "no")
     {
       int x;
-      for (int i = 0; i < v_info.size(); i++)
-      {
-        if (v_info[i].id == stoi(data))
-        {
-          x = i;
-          break;
-        }
-      }
       if (stoi(data) == round + 1)
       {
-        thread thr_bro(broadcast,id,v_info,"yes");
+        thread thr_bro(broadcast, id, v_info, "yes");
         thr_bro.detach();
         proposer = stoi(data);
         check_propose = true;
       }
       else
       {
-        thread thr_bro(broadcast,id,v_info,"no");
+        thread thr_bro(broadcast, id, v_info, "no");
         thr_bro.detach();
       }
     }
     else
     {
       // Khong xet truong hop node loi gui nhieu goi tra loi
-      if (data == "yes")
+      mtx_log.lock();
+      if (data == "yes" && write_log==true)
         int_yes++;
-      if (int_yes >= 1)
+        
+      if (int_yes >= 4)
       {
         //ghi file
         log(to_string(id));
-        check_propose = false;
+
         int_yes = 0;
+        check_propose = false;
+        round++;
+        round = round % v_info.size();
+        write_log=false;
+        plusround = false;
       }
+      mtx_log.unlock();
     }
   }
 }
 
-void fun_propose(int id,vector<info> v_info)
+void fun_propose(int id, vector<info> v_info)
 {
   while (1)
   {
     unique_lock<mutex> lck(mtx_pro);
     cv_pro.wait(lck, []() { return flag_pro; });
+    cout<<"Chay "<<global_id<<endl;
     flag_pro = false;
     if (round == id - 1)
     {
-      cout<<"Proposer: "<<id<<endl;
+      cout << "Proposer: " << id << endl;
       thread thr_send(broadcast, id, v_info, to_string(id));
       thr_send.detach();
     }
 
-    proposer=id;
-    check_propose=true;
+    /*proposer=id;
+    check_propose=true;*/
   }
 }
 
 void consensus(int id, vector<info> v_info)
 {
-  thread thr_recv(recv_mess,v_info[id-1].port);
+  thread thr_recv(recv_mess, v_info[id - 1].port);
   thr_recv.detach();
 
-  thread thr_propo(fun_propose,id,v_info);
+  thread thr_propo(fun_propose, id, v_info);
   thr_propo.detach();
-  
-  sleep(3);
 
+  sleep(5);
+
+  flag_pro=true;
   cv_pro.notify_one();
 
   thread thr_timeout(OutOfTime, v_info.size());
@@ -286,16 +299,16 @@ void consensus(int id, vector<info> v_info)
   {
     vector<string> store_mess;
     unique_lock<mutex> lock(mtx_recv);
-    cv_recv.wait_for(lock, std::chrono::seconds(15), check_length_vstr);
+    cv_recv.wait(lock, check_length_vstr);
     if (gb_v_str.size() != 0)
     {
-      cout<<"MESS"<<endl;
+      mtx_vstr.lock();
       while (gb_v_str.size() != 0)
       {
         store_mess.push_back(gb_v_str.back());
-        cout<<store_mess.back()<<endl;
         gb_v_str.pop_back();
       }
+      mtx_vstr.unlock();
       // Xu ly goi tin
       thread cl_mess(classify_mess, id, v_info, store_mess);
       cl_mess.detach();
@@ -344,6 +357,7 @@ int main(int argc, char *argv[])
   }
 
   string id = argv[1];
+  global_id=stoi(id);
 
   vector<info> v_info;
   v_info = GetInfo();
